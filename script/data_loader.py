@@ -1,9 +1,12 @@
 import os
 import pathlib
+import scipy.io as io
 
-import torch 
+import torch
+from torch.nn.functional import one_hot
 import numpy as np
 import cv2
+from sklearn.preprocessing import MinMaxScaler
 
 from embedders import PhysicsLDSE2C
 from torch.utils.data import DataLoader,Dataset
@@ -100,60 +103,100 @@ class FetchPushDataset(Dataset):
         observations = np.concatenate([observations, desired_goals], axis=-1)
         # print(observations.shape)
         return observations, actions, observations, desired_goals
+    
+# class CharDataset(Dataset):
+#     def __init__(self, path="/home/worker/robochars/Character_control/data/mixoutALL_shifted.mat"):
+#         data = io.loadmat(path)
+#         self.trajectories = data['mixout'][0,:]
+#         meta = data['consts']
+#         self.labels = meta[0,0][4].astype(int)
+#         self.alphabet = [char[0] for char in meta[0,0][3][0]]
+#         self.dt = meta[0,0][5]
+        
+#         self.__prep()
+        
+#     def __prep(self):
+#         self.seq_len = max([len(tj) for tj in self.trajectories])
+        
+#         # pad 
+#         np.pad(tj, ) for tj in self.trajectories:
+            
+class CharDataset(Dataset):
+    
+    def __init__(self, num_traj, 
+                 path='/home/worker/robochars/Character_control/data/mixoutALL_shifted.mat', 
+                 norm_action=True, indices=None):
+        data = io.loadmat(path)
+        trajectories = data['mixout'][0,:].tolist()
+        meta = data['consts']
+        labels = meta[0,0][4].astype(int).ravel()
+        self.alphabet = np.array([char[0] for char in meta[0,0][3][0]])
+        dt = meta[0,0][5]
+        self.norm_action = norm_action
+        self.indices = indices
+
+        self.__prep(trajectories, labels, dt, indices)
+        
+    def __prep(self, trajectories, labels, dt, indices):
+        max_seq_len = max([tj.shape[1] for tj in trajectories])
+        # exit()
+        
+        tokens = []
+        obs = []
+        actions = []
+        for i, act_seq in enumerate(trajectories):
+            act_seq = np.pad(act_seq, pad_width=((0, 0), (0, max_seq_len - act_seq.shape[1])), mode="constant", constant_values=0.0)
+            traj = np.cumsum(act_seq*dt,axis=-1)[:,0:-1].T
+            # traj_pad = np.pad(traj, pad_width=((0, max_seq_len - traj.shape[0]), (0, 0)))
+            obs.append(traj)
+            
+            # obs_post.append(np.cumsum(traj*dt,axis=-1)[:,1:].T)
+            actions.append(act_seq[:,1:].T)
+            tokens.append(labels[i]*np.ones(act_seq.shape[1]-1,dtype=int)-1)
+        obs = np.stack(obs, axis=0) # num_traj x seq_len x obs_dim(28)
+        actions = np.stack(actions, axis=0) # num_traj x seq_len x action_dim(3)
+        tokens = np.stack(tokens, axis=0) # num_traj x seq_len
+        if self.norm_action:
+            actions_std = (actions - actions.min(keepdims=True)) / (actions.max(keepdims=True) - actions.min(keepdims=True))
+            actions = actions_std * 2 - 1
+        actions = np.concatenate([actions, np.zeros(shape=(*actions.shape[:-1], 1))], axis=-1)
+            
+        # assign
+        self.obs = obs
+        self.actions = actions
+        self.tokens = tokens
+        self.num_traj = len(indices) if indices is not None else obs.shape[0]
+            
+    def __len__(self):
+        return self.num_traj
+    
+    def __getitem__(self, idx):
+        if idx >= self.num_traj:
+            raise IndexError
+
+        if self.indices is not None:
+            idx = self.indices[idx]
+        
+        total_cat = len(self.alphabet)
+        observations = torch.from_numpy(self.obs[idx]).float()
+        actions = torch.from_numpy(self.actions[idx]).float()
+        goal_idx = one_hot(torch.from_numpy(self.tokens[idx].ravel()),total_cat)
+        desired_goals =  torch.from_numpy(self.tokens[idx].ravel())
+        
+        # concatenate obs and goals
+        observations = torch.concatenate([observations, goal_idx], dim=-1)
+        return observations, actions, observations, desired_goals
+
 
 if __name__ == "__main__":
-    # from simulator import generate_seq_data
-    # from simulator import PointMass_Maze
-    import matplotlib.pyplot as plt
-    # pm = PointMass_Maze(size=4)
-    # trajectory_data = generate_seq_data(100, 313, pm)
-    # ds = SeqDataset_v2(*trajectory_data)
-    # for idx, (im, a, x, g) in enumerate(ds):
-    #     print(idx, end="\r")
-    #     if idx == 0:
-    #         print(im.shape)
-    #         plt.imshow(im.sum(dim=0).detach().cpu().numpy().transpose(1,2,0))
-    #         plt.savefig("test.png")
-    #         for i in range(5):
-    #             plt.imshow(im[i].detach().cpu().numpy().transpose(1,2,0))
-    #             plt.savefig("test{}.png".format(i))
-    
-    plt.figure(figsize=(20, 5))
-    
-    fpd = FetchPushDataset(num_traj=-1)
-    n_count = np.inf
-    act_arr = []
-    for idx, (obs, act, state, goals) in enumerate(fpd):
-        print("=================={}/{}==================".format(idx, len(fpd)), end="\r")
-        # print(act)
-        # act_arr.append(act)
-        # print(obs.shape, act.shape, state.shape, goals.shape)
-        # plt.subplot(1, 4, 1)
-        # plt.hist(act[:, 0], density=True, bins=30)
-        
-        # plt.subplot(1, 4, 2)
-        # plt.hist(act[:, 1], density=True, bins=30)
-        
-        # plt.subplot(1, 4, 3)
-        # plt.hist(act[:, 2], density=True, bins=30)
-        
-        # plt.subplot(1, 4, 4)
-        # plt.hist(act[:, 3], density=True, bins=30)
-        
-        if idx > n_count:
-            break
-    exit()
-    plt.subplot(1, 4, 1)
-    act_arr = np.concatenate(act_arr, axis=0)
-    plt.hist(act_arr[:, 0], density=True, bins=30)
-    
-    plt.subplot(1, 4, 2)
-    plt.hist(act_arr[:, 1], density=True, bins=30)
-    
-    plt.subplot(1, 4, 3)
-    plt.hist(act_arr[:, 2], density=True, bins=30)
-    
-    plt.subplot(1, 4, 4)
-    plt.hist(act_arr[:, 3], density=True, bins=30)
-    plt.savefig("test.png")
-        
+    chards = CharDataset(num_traj=-1, norm_action=False)
+    print(len(chards))
+    print([el.shape for el in chards[0]])
+    print("traj: ", chards[0][0][:5, :], 
+          "acti: ", chards[0][1][:5, :])
+    print(chards.actions.min(), chards.actions.max())
+    for idx, _ in enumerate(iter(chards)):
+        print("=========={}/{}===========".format(idx, len(chards) - 1), end="\r")
+    print(_[0])
+    print(_[1].mean(), _[1].std())
+    print(chards.alphabet)
