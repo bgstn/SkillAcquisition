@@ -4,6 +4,8 @@ This repo tries to learn to segment skills from image demonstrations and learn a
 # Model Architecture
 ![image](https://github.com/user-attachments/assets/df495573-a309-4f0f-b61d-cd39c7a5b6f6)
 
+# Project Website
+https://sites.google.com/view/skillacquisition/home
 
 # Job
 
